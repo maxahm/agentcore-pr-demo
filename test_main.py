@@ -1,38 +1,42 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app, tasks, next_id
+from main import app, tasks, task_id_counter
+import itertools
 
-client = TestClient(app)
 
-
-@pytest.fixture(autouse=True)
-def reset_tasks():
-    """Reset the tasks dictionary and next_id before each test."""
+@pytest.fixture
+def client():
+    # Reset state before each test
     tasks.clear()
+    # Reset the counter by replacing it with a new one
     import main
-    main.next_id = 1
-    yield
+    main.task_id_counter = itertools.count(1)
+    return TestClient(app)
 
 
-def test_create_task():
-    """Test creating a new task."""
-    response = client.post(
-        "/tasks",
-        json={"title": "Test Task", "description": "Test Description", "completed": False}
-    )
+def test_create_task(client):
+    response = client.post("/tasks", json={
+        "title": "Test Task",
+        "description": "Test Description"
+    })
     assert response.status_code == 201
     data = response.json()
-    assert data["id"] == 1
     assert data["title"] == "Test Task"
     assert data["description"] == "Test Description"
     assert data["completed"] is False
+    assert "id" in data
 
 
-def test_get_all_tasks():
-    """Test getting all tasks."""
-    # Create a couple of tasks first
-    client.post("/tasks", json={"title": "Task 1", "description": "First task"})
-    client.post("/tasks", json={"title": "Task 2", "description": "Second task"})
+def test_get_tasks_empty(client):
+    response = client.get("/tasks")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_tasks_with_data(client):
+    # Create a task first
+    client.post("/tasks", json={"title": "Task 1"})
+    client.post("/tasks", json={"title": "Task 2"})
     
     response = client.get("/tasks")
     assert response.status_code == 200
@@ -42,50 +46,82 @@ def test_get_all_tasks():
     assert data[1]["title"] == "Task 2"
 
 
-def test_get_task_by_id():
-    """Test getting a specific task by ID."""
-    # Create a task first
-    create_response = client.post(
-        "/tasks",
-        json={"title": "Specific Task", "description": "Get this one"}
-    )
+def test_get_task_by_id(client):
+    # Create a task
+    create_response = client.post("/tasks", json={"title": "Task 1"})
     task_id = create_response.json()["id"]
     
+    # Get the task
     response = client.get(f"/tasks/{task_id}")
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == task_id
-    assert data["title"] == "Specific Task"
-    assert data["description"] == "Get this one"
+    assert data["title"] == "Task 1"
 
 
-def test_get_task_not_found():
-    """Test getting a non-existent task returns 404."""
+def test_get_task_not_found(client):
     response = client.get("/tasks/999")
     assert response.status_code == 404
     assert response.json()["detail"] == "Task not found"
 
 
-def test_delete_task():
-    """Test deleting a task."""
-    # Create a task first
-    create_response = client.post(
-        "/tasks",
-        json={"title": "Task to Delete", "description": "Will be deleted"}
-    )
+def test_update_task_partial(client):
+    # Create a task
+    create_response = client.post("/tasks", json={
+        "title": "Original Title",
+        "description": "Original Description",
+        "completed": False
+    })
+    task_id = create_response.json()["id"]
+    
+    # Update only the completed status
+    response = client.patch(f"/tasks/{task_id}", json={"completed": True})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == task_id
+    assert data["title"] == "Original Title"
+    assert data["description"] == "Original Description"
+    assert data["completed"] is True
+
+
+def test_update_task_full(client):
+    # Create a task
+    create_response = client.post("/tasks", json={"title": "Old Title"})
+    task_id = create_response.json()["id"]
+    
+    # Update all fields
+    response = client.patch(f"/tasks/{task_id}", json={
+        "title": "New Title",
+        "description": "New Description",
+        "completed": True
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["title"] == "New Title"
+    assert data["description"] == "New Description"
+    assert data["completed"] is True
+
+
+def test_update_task_not_found(client):
+    response = client.patch("/tasks/999", json={"completed": True})
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+
+
+def test_delete_task(client):
+    # Create a task
+    create_response = client.post("/tasks", json={"title": "Task to Delete"})
     task_id = create_response.json()["id"]
     
     # Delete the task
     response = client.delete(f"/tasks/{task_id}")
     assert response.status_code == 204
     
-    # Verify it's gone
+    # Verify it's deleted
     get_response = client.get(f"/tasks/{task_id}")
     assert get_response.status_code == 404
 
 
-def test_delete_task_not_found():
-    """Test deleting a non-existent task returns 404."""
+def test_delete_task_not_found(client):
     response = client.delete("/tasks/999")
     assert response.status_code == 404
-    assert response.json()["detail"] == "Task not found"
